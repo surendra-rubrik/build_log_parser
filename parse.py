@@ -6,6 +6,7 @@ import subprocess
 import json
 import re
 import collections
+import requests
 
 build_matrix = []
 
@@ -167,6 +168,8 @@ def parse_console_content(fileName,buildNumber):
                 if 'Finished: SUCCESS' in line_content:
                     archiving_end_time = time_stamp
                     overral_status = 'SUCCESS'
+                elif 'Finished:' in line_content:
+                    overral_status = line_content.split('Finished:')[1]
 
                 if 'Filed issue' in line_content:
                     bug_id = line_content.split('Filed issue u\'')[1].split('\'')[0]
@@ -215,9 +218,15 @@ def parse_console_content(fileName,buildNumber):
             build_details['archiving_time'] = archiving_time
 
         #print("Build Status : %s"%(overral_status))
-        build_details['status'] = overral_status
+        #build_details['status'] = overral_status
         build_details['compile_details'] = compile_details
 
+        build_rest_url = 'http://cdm-builds.corp.rubrik.com/job/Compile_CDM/%s/api/json?pretty=true'%(buildNumber)
+        response = requests.get(build_rest_url)
+        response = response.json()
+        build_details['duration'] = response['duration']
+        build_details['result'] = overral_status
+        build_details['timestamp'] = response['timestamp']
         return build_details
 
 def get_build_file(build_number):
@@ -226,8 +235,8 @@ def get_build_file(build_number):
 
 
 def main():
-    for buildNumber in range(6812, 6819):
-        # get_build_file(buildNumber)
+    for buildNumber in range(7005, 7006):
+        #get_build_file(buildNumber)
         #print('==============================================\n')
         build_matrix.append(parse_console_content('data/%d.html'%(buildNumber),buildNumber))
     print(json.dumps(build_matrix, indent=4, sort_keys=True))

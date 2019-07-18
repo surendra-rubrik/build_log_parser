@@ -45,6 +45,23 @@ def check_for_non_test_failures(passed_line):
     return None
 
 
+def convert_to_millisec(t):
+    total = 0
+
+    if 'ms' in t:
+        total = float(t.split('ms')[0])
+        return total
+    if 'h' in t:
+        total = total + float(t.split('h')[0])*60000*60
+        t=t.split('h')[1]
+    if 'm' in t:
+        total = total + float(t.split('m')[0])*60000
+        t = t.split('m')[1]
+    if 's' in t:
+        total = total + float(t.split('s')[0])*1000
+    return total
+
+
 def process_test_log(tmp_log,is_passed=True):
     #print(len(tmp_log))
     testcase_matrix = {}
@@ -57,7 +74,12 @@ def process_test_log(tmp_log,is_passed=True):
                 time_taken = re.sub(r'[^\x00-\x7F]+','', line.split()[1])
                 time_taken = time_taken.split(';')[1] if len(time_taken.split(';')) > 1 else time_taken
                 status = 'PASSED'
-                testcase_matrix[key] = {'time_taken' : time_taken,'status':status}
+                testcase_matrix[key] = {
+                    'test_case_name': key,
+                    'time_taken': time_taken,
+                    'status': status,
+                    'time_in_millisec': convert_to_millisec(time_taken)
+                }
         else:
             if 'PASSED ' in line or 'FAILED ' in line or 'TIMEOUT ' in line:
                 key = re.sub(r'[^\x00-\x7F]+', '', line.split()[0])
@@ -70,8 +92,10 @@ def process_test_log(tmp_log,is_passed=True):
                         'bug_owner': 'owner'
                     })
                 testcase_matrix[key] = {
+                    'test_case_name': key,
                     'time_taken': time_taken,
                     'status': status,
+                    'time_in_millisec': convert_to_millisec(time_taken)
                 }
 
     return testcase_matrix, failure_type
@@ -145,8 +169,11 @@ def parse_console_content(fileName,buildNumber):
                 if 'Time to build' in line_content:
                     #print(line_content.split('Time to build ',1)[1])
                     compile_name,duration = (line_content.split('Time to build ',1)[1]).split('=')
-                    compile_details[compile_name] = duration
 
+                    #duration = duration.replace(' ','');
+                    duration_min = duration.split('minutes and')[0].replace(' ','')
+                    duration_sec = (duration.split('minutes and')[1]).replace('seconds\n','').replace(' ','')
+                    compile_details[compile_name] = int(duration_min)*60 + int(duration_sec)
 
                 #Python Test time :
                 if 'Running py.test ...' in line_content:
@@ -299,14 +326,12 @@ def parse_console_content(fileName,buildNumber):
             })
         return build_details
 
-
 def get_build_file(build_number):
     build_url= JENKINS_URL + "Compile_CDM/%d/consoleFull"% (build_number)
     subprocess.call(["wget", '-O', 'data/%d.html' %(build_number),build_url])
 
-
 def main():
-    for buildNumber in range(7013, 7014):
+    for buildNumber in range(7010, 7013):
         #get_build_file(buildNumber)
         #print('==============================================\n')
         build_matrix.append(parse_console_content('data/%d.html'%(buildNumber),buildNumber))
@@ -314,6 +339,21 @@ def main():
     with open('data.json', 'w') as f:
         json.dump(build_matrix,f, indent=4, sort_keys=True)
 
+    testcase_matrix = []
+
+    for build in build_matrix:
+        for testcase_name,testcase in build['cpp_test_cases'][0].iteritems():
+            if testcase['test_case_name'] in testcase_matrix:
+                testcase_matrix.append({'build_number' : build['id'],'time_taken': testcase['time_taken'],'time_in_millisec':testcase['time_in_millisec']})
+            else:
+                testcase_matrix.append({'build_number' : build['id'],
+                                                                'time_taken': testcase['time_taken'],
+                                                                'time_in_millisec':testcase['time_in_millisec'],
+                                                                'test_case_name':testcase['test_case_name']})
+
+    print(json.dumps(testcase_matrix, indent=4, sort_keys=True))
+    with open('testcase.json', 'w') as f:
+        json.dump(testcase_matrix, f, indent=4, sort_keys=True)
 
 if __name__ == "__main__":
     main()

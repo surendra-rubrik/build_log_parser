@@ -3,8 +3,11 @@ import pytz
 import datetime
 import dateutil.parser
 import subprocess
+import json
+import re
+import collections
 
-
+build_matrix = []
 
 def utc_time_duration(start_time,end_time):
     format = '%Y-%m-%dT%H:%M:%S%z'
@@ -12,7 +15,58 @@ def utc_time_duration(start_time,end_time):
     end_time_utc = dateutil.parser.parse(end_time)
     return str(end_time_utc - start_time_utc)
 
-def get_console_content(fileName):
+
+def process_test_log(tmp_log,is_passed=True):
+    #print(len(tmp_log))
+    testcase_matrix = {}
+    count = 0
+    for line in tmp_log:
+        if is_passed:
+            if 'PASS ' in line or 'FAIL ' in line:
+                key = re.sub(r'[^\x00-\x7F]+','', line.split()[2])
+                time_taken = re.sub(r'[^\x00-\x7F]+','', line.split()[1])
+                time_taken = time_taken.split(';')[1] if len(time_taken.split(';')) > 1 else time_taken
+                status = 'PASSED'
+                testcase_matrix[key] = {'time_taken' : time_taken,'status':status}
+        else:
+            if 'PASSED ' in line or 'FAILED ' in line:
+                key = re.sub(r'[^\x00-\x7F]+', '', line.split()[0])
+                time_taken = re.sub(r'[^\x00-\x7F]+', '', line.split()[3])
+                time_taken = time_taken.split(';')[1] if len(time_taken.split(';')) > 1 else time_taken
+                status = line.split()[1]
+                testcase_matrix[key] = {'time_taken': time_taken, 'status': status}
+    return testcase_matrix
+
+
+def parse_console_content(fileName,buildNumber):
+
+    build_details ={}
+    compile_details = {}
+    build_details['id']='%s'%(buildNumber)
+
+    git_operation_start_time = False
+    git_operation_end_time = False
+    python_test_start_time = False
+    python_test_end_time = False
+    pant_test_start_time = False
+    pant_test_end_time = False
+    rk_py_test_start_time = False
+    rk_py_test_end_time = False
+    go_test_start_time = False
+    go_test_end_time = False
+    cpp_test_start_time = False
+    cpp_test_end_time = False
+    java_test_start_time = False
+    java_test_end_time = False
+    web_test_start_time = False
+    web_test_end_time = False
+    archiving_start_time = False
+    archiving_end_time = False
+    overral_status = 'FAILED'
+
+    tmp_log = []
+
+
     contentFound = False
     contentComplete = False
     with open(fileName, "r") as ins:
@@ -30,12 +84,14 @@ def get_console_content(fileName):
                 #host info
                 if 'Building remotely on <a href=\'/computer/' in line_content :
                     host_info = (line_content.split('Building remotely on <a href=\'/computer/',1)[1]).split('\'')[0]
-                    print(host_info)
+                    #print(host_info)
+                    build_details['host_info'] = host_info
 
                 #hash
                 if 'git checkout -f ' in line_content:
                     hash=line_content.split('git checkout -f ',1)[1]
-                    print(hash)
+                    #print(hash)
+                    build_details['hash'] = hash
 
 
                 if 'Cloning the remote Git repository' in line_content:
@@ -43,11 +99,12 @@ def get_console_content(fileName):
                 if '*********** RESTRICTING IPTABLES TO WHITELISTED IPs ONLY! ***********' in line_content:
                     git_operation_end_time = time_stamp
 
-
-
                 #Compilation time
                 if 'Time to build' in line_content:
-                    print(line_content.split('Time to build ',1)[1])
+                    #print(line_content.split('Time to build ',1)[1])
+                    compile_name,duration = (line_content.split('Time to build ',1)[1]).split('=')
+                    compile_details[compile_name] = duration
+
 
                 #Python Test time :
                 if 'Running py.test ...' in line_content:
@@ -68,18 +125,30 @@ def get_console_content(fileName):
                     rk_py_test_end_time = time_stamp
 
 
-
                 if 'Running Go tests...' in line_content:
                     go_test_start_time = time_stamp
-                if 'Go tests: ' in line_content:
+                    tmp_log = []
+                if go_test_start_time and 'Go tests: ' in line_content:
                     go_test_end_time = time_stamp
-
+                    build_details['go_test_cases'] = process_test_log(tmp_log,True)
+                    tmp_log = []
+                elif go_test_start_time and not go_test_end_time and 'FAILURE SUMMARY:' in line_content:
+                    go_test_end_time = time_stamp
+                    build_details['go_test_cases'] = process_test_log(tmp_log,False)
+                    tmp_log =[]
+                    #break
 
                 if "bazel test '--test_tag_filters=unit-test' '--test_output=errors' //'src/cpp'/..." in line_content:
                     cpp_test_start_time = time_stamp
-                if 'Cpp tests: ' in line_content:
+                    tmp_log = []
+                if cpp_test_start_time and 'Cpp tests: ' in line_content:
                     cpp_test_end_time = time_stamp
-
+                    build_details['cpp_test_cases'] = process_test_log(tmp_log)
+                    tmp_log = []
+                elif cpp_test_start_time and not cpp_test_end_time and 'FAILURE SUMMARY:' in line_content:
+                    cpp_test_end_time = time_stamp
+                    build_details['cpp_test_cases'] = process_test_log(tmp_log,False)
+                    #break
 
                 if 'Running Bazel tests for Java: ' in line_content:
                     java_test_start_time = time_stamp
@@ -95,50 +164,76 @@ def get_console_content(fileName):
 
                 if 'Archiving artifacts' in line_content:
                     archiving_start_time = time_stamp
-                if 'Finished: ' in line_content:
+                if 'Finished: SUCCESS' in line_content:
                     archiving_end_time = time_stamp
+                    overral_status = 'SUCCESS'
+
+                if 'Filed issue' in line_content:
+                    bug_id = line_content.split('Filed issue u\'')[1].split('\'')[0]
+                    build_details['bug_id'] = bug_id
+
+
+                tmp_log.append(line_content)
 
                 #print(time_stamp + ' ' +  line_content)
                 #print(line)
 
         if git_operation_start_time and git_operation_end_time:
-            print('git operation time : ' + utc_time_duration(git_operation_start_time, git_operation_end_time))
+            git_operation_time = utc_time_duration(git_operation_start_time, git_operation_end_time)
+            build_details['git_operation_time']= git_operation_time
 
         if python_test_start_time and python_test_end_time:
-            print('Python test time : ' + utc_time_duration(python_test_start_time, python_test_end_time))
+            python_test_time = utc_time_duration(python_test_start_time, python_test_end_time)
+            build_details['python_test_time']=python_test_time
 
         if pant_test_start_time and pant_test_end_time:
-            print('Pant test time : ' + utc_time_duration(pant_test_start_time, pant_test_end_time))
+            pant_test_time = utc_time_duration(pant_test_start_time, pant_test_end_time)
+            build_details['pant_test_time'] = pant_test_time
 
         if rk_py_test_start_time and rk_py_test_end_time:
-            print('RK_Py test time : ' + utc_time_duration(rk_py_test_start_time, rk_py_test_end_time))
+            rk_test_time = utc_time_duration(rk_py_test_start_time, rk_py_test_end_time)
+            build_details['rk_test_time'] = rk_test_time
 
         if go_test_start_time and go_test_end_time:
-            print('Go test time : ' + utc_time_duration(go_test_start_time, go_test_end_time))
+            go_test_time = utc_time_duration(go_test_start_time, go_test_end_time)
+            build_details['go_test_time'] = go_test_time
 
         if cpp_test_start_time and cpp_test_end_time:
-            print('CPP test time : ' + utc_time_duration(cpp_test_start_time, cpp_test_end_time))
+            cpp_test_time = utc_time_duration(cpp_test_start_time, cpp_test_end_time)
+            build_details['cpp_test_time'] = cpp_test_time
 
         if java_test_start_time and java_test_end_time:
-            print('JAVA test time : ' + utc_time_duration(java_test_start_time, java_test_end_time))
+            java_test_time = utc_time_duration(java_test_start_time, java_test_end_time)
+            build_details['java_test_time'] = java_test_time
 
         if web_test_start_time and web_test_end_time:
-            print('WEB test time : ' + utc_time_duration(web_test_start_time, web_test_end_time))
+            web_test_time = utc_time_duration(web_test_start_time, web_test_end_time)
+            build_details['web_test_time'] = web_test_time
 
         if archiving_start_time and archiving_end_time:
-            print('Archiving time : ' + utc_time_duration(archiving_start_time, archiving_end_time))
+            archiving_time = utc_time_duration(archiving_start_time, archiving_end_time)
+            build_details['archiving_time'] = archiving_time
 
+        #print("Build Status : %s"%(overral_status))
+        build_details['status'] = overral_status
+        build_details['compile_details'] = compile_details
+
+        return build_details
 
 def get_build_file(build_number):
     build_url= 'http://cdm-builds.corp.rubrik.com/job/Compile_CDM/%d/consoleFull'% (build_number)
     subprocess.call(["wget",'-O' ,'data/%d.html' %(build_number),build_url])
 
 
-
 def main():
-    for i in range(6802, 6803):
-        get_build_file(i)
-        get_console_content('data/%d.html'%(i))
+    for buildNumber in range(6812, 6819):
+        # get_build_file(buildNumber)
+        #print('==============================================\n')
+        build_matrix.append(parse_console_content('data/%d.html'%(buildNumber),buildNumber))
+    print(json.dumps(build_matrix, indent=4, sort_keys=True))
+    with open('data.json', 'w') as f:
+        json.dump(build_matrix,f, indent=4, sort_keys=True)
+
 
 if __name__ == "__main__":
     main()
